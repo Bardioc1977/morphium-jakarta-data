@@ -1,0 +1,41 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        java: [ '21' ]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Build morphium core (SNAPSHOT dependency)
+        run: |
+          git clone --depth 1 https://github.com/Bardioc1977/morphium.git /tmp/morphium
+          cd /tmp/morphium
+          mvn -B install -DskipTests -pl morphium-core -am
+
+      - name: Build with Maven
+        run: mvn -B verify
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-java-${{ matrix.java }}
+          path: '**/target/surefire-reports/'
+          retention-days: 7
