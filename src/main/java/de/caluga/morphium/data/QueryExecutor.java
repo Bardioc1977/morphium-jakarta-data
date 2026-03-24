@@ -11,7 +11,6 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Field;
 import java.util.*;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -72,11 +71,11 @@ public final class QueryExecutor {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void applyConditions(Query query,
-                                         QueryDescriptor descriptor,
-                                         Object[] args,
-                                         Morphium morphium,
-                                         Class entityClass) {
+    static void applyConditions(Query query,
+                                QueryDescriptor descriptor,
+                                Object[] args,
+                                Morphium morphium,
+                                Class entityClass) {
         boolean isOr = descriptor.combinator() == Combinator.OR;
 
         if (isOr && descriptor.conditions().size() > 1) {
@@ -306,7 +305,7 @@ public final class QueryExecutor {
         for (int i = 0; i < likePattern.length(); i++) {
             char c = likePattern.charAt(i);
             if (c == '%' || c == '_') {
-                if (!literal.isEmpty()) {
+                if (literal.length() > 0) {
                     regex.append(Pattern.quote(literal.toString()));
                     literal.setLength(0);
                 }
@@ -315,9 +314,9 @@ public final class QueryExecutor {
                 literal.append(c);
             }
         }
-        if (!literal.isEmpty()) {
+        if (literal.length() > 0) {
             regex.append(Pattern.quote(literal.toString()));
         }
-        return regex.toString();
+        return "^" + regex + "$";
     }
 }

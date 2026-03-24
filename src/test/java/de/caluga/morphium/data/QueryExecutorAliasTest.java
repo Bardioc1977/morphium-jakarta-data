@@ -271,21 +271,7 @@ class QueryExecutorAliasTest {
     private Query<?> buildQuery(QueryDescriptor descriptor, Object[] args) {
         Class entityClass = OtaUpdate.class;
         Query query = morphium.createQueryFor(entityClass);
-
-        boolean isOr = descriptor.combinator() == Combinator.OR;
-        if (isOr && descriptor.conditions().size() > 1) {
-            List<Query> orQueries = new ArrayList<>();
-            for (Condition cond : descriptor.conditions()) {
-                Query sub = morphium.createQueryFor(entityClass);
-                QueryExecutor.applyCondition(sub, cond, args, morphium, entityClass);
-                orQueries.add(sub);
-            }
-            query.or(orQueries);
-        } else {
-            for (Condition cond : descriptor.conditions()) {
-                QueryExecutor.applyCondition(query, cond, args, morphium, entityClass);
-            }
-        }
+        QueryExecutor.applyConditions(query, descriptor, args, morphium, entityClass);
         return query;
     }
 }
