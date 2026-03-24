@@ -267,6 +267,115 @@ class QueryExecutorAliasTest {
         assertThat(nestedFields).containsExactlyInAnyOrder("ota_update_id", "updateId");
     }
 
+    @Test
+    @DisplayName("LIKE operator generates anchored $regex with escaped metacharacters")
+    void likeOperatorGeneratesRegex() {
+        QueryDescriptor descriptor = new QueryDescriptor(
+                Prefix.FIND,
+                List.of(new Condition("campaignNumber", Operator.LIKE, 0)),
+                Combinator.AND,
+                List.of(),
+                ReturnType.LIST
+        );
+
+        Query<?> query = buildQuery(descriptor, new Object[]{"%test[1]%"});
+        Map<String, Object> queryObj = query.toQueryObject();
+
+        assertThat(queryObj).containsKey("campaign_number");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> regexMap = (Map<String, Object>) queryObj.get("campaign_number");
+        String regex = (String) regexMap.get("$regex");
+        assertThat(regex).startsWith("^");
+        assertThat(regex).endsWith("$");
+        // Pattern.quote escapes the whole literal block including [1]
+        assertThat(regex).contains("\\Qtest[1]\\E");
+    }
+
+    @Test
+    @DisplayName("STARTS_WITH generates anchored $regex with ^ prefix")
+    void startsWithGeneratesRegex() {
+        QueryDescriptor descriptor = new QueryDescriptor(
+                Prefix.FIND,
+                List.of(new Condition("campaignNumber", Operator.STARTS_WITH, 0)),
+                Combinator.AND,
+                List.of(),
+                ReturnType.LIST
+        );
+
+        Query<?> query = buildQuery(descriptor, new Object[]{"CN-"});
+        Map<String, Object> queryObj = query.toQueryObject();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> regexMap = (Map<String, Object>) queryObj.get("campaign_number");
+        String regex = (String) regexMap.get("$regex");
+        assertThat(regex).startsWith("^");
+        assertThat(regex).contains("\\QCN-\\E");
+    }
+
+    @Test
+    @DisplayName("ENDS_WITH generates $regex with $ suffix")
+    void endsWithGeneratesRegex() {
+        QueryDescriptor descriptor = new QueryDescriptor(
+                Prefix.FIND,
+                List.of(new Condition("status", Operator.ENDS_WITH, 0)),
+                Combinator.AND,
+                List.of(),
+                ReturnType.LIST
+        );
+
+        Query<?> query = buildQuery(descriptor, new Object[]{"_done"});
+        Map<String, Object> queryObj = query.toQueryObject();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> regexMap = (Map<String, Object>) queryObj.get("status");
+        String regex = (String) regexMap.get("$regex");
+        assertThat(regex).endsWith("$");
+        assertThat(regex).contains("\\Q_done\\E");
+    }
+
+    @Test
+    @DisplayName("MATCHES generates $regex with raw pattern")
+    void matchesGeneratesRegex() {
+        QueryDescriptor descriptor = new QueryDescriptor(
+                Prefix.FIND,
+                List.of(new Condition("vin", Operator.MATCHES, 0)),
+                Combinator.AND,
+                List.of(),
+                ReturnType.LIST
+        );
+
+        Query<?> query = buildQuery(descriptor, new Object[]{"^WBA[0-9]+"});
+        Map<String, Object> queryObj = query.toQueryObject();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> regexMap = (Map<String, Object>) queryObj.get("vin");
+        assertThat(regexMap).containsEntry("$regex", "^WBA[0-9]+");
+    }
+
+    @Test
+    @DisplayName("IGNORE_CASE generates $regex with case-insensitive option")
+    void ignoreCaseGeneratesRegexWithOption() {
+        QueryDescriptor descriptor = new QueryDescriptor(
+                Prefix.FIND,
+                List.of(new Condition("status", Operator.IGNORE_CASE, 0)),
+                Combinator.AND,
+                List.of(),
+                ReturnType.LIST
+        );
+
+        Query<?> query = buildQuery(descriptor, new Object[]{"Active"});
+        Map<String, Object> queryObj = query.toQueryObject();
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> regexMap = (Map<String, Object>) queryObj.get("status");
+        assertThat(regexMap).containsKey("$regex");
+        assertThat(regexMap).containsEntry("$options", "i");
+        String regex = (String) regexMap.get("$regex");
+        assertThat(regex).startsWith("^");
+        assertThat(regex).endsWith("$");
+        assertThat(regex).contains("\\QActive\\E");
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Query<?> buildQuery(QueryDescriptor descriptor, Object[] args) {
         Class entityClass = OtaUpdate.class;

@@ -70,6 +70,7 @@ public final class QueryExecutor {
         };
     }
 
+    // Visible for testing — called directly by QueryExecutorAliasTest
     @SuppressWarnings({"unchecked", "rawtypes"})
     static void applyConditions(Query query,
                                 QueryDescriptor descriptor,
@@ -94,6 +95,7 @@ public final class QueryExecutor {
         }
     }
 
+    // Visible for testing — called indirectly via applyConditions
     @SuppressWarnings({"unchecked", "rawtypes"})
     static void applyCondition(Query query,
                                Condition cond,
@@ -241,8 +243,8 @@ public final class QueryExecutor {
                 return List.of(javaField.getAnnotation(Aliases.class).value());
             }
         } catch (Exception e) {
-            log.trace("Could not resolve aliases for field '{}' on {}: {}",
-                    javaFieldName, entityClass.getSimpleName(), e.getMessage());
+            log.trace("Could not resolve aliases for field '{}' on {}",
+                    javaFieldName, entityClass.getSimpleName(), e);
         }
         return List.of();
     }
