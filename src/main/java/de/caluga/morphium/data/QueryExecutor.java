@@ -100,35 +100,38 @@ public final class QueryExecutor {
 
         if (!aliases.isEmpty()) {
             // Field has @Aliases — build $or to match current name + all aliases.
-            // The primary field uses query.f() (normal resolution), but alias names
-            // must be used as raw MongoDB field names (query.f() would resolve them
-            // back to the current name via ARHelper).
+            // Each sub-query uses rawQuery(buildRawCondition()) so that alias field
+            // names bypass ARHelper resolution (which would map them back to the
+            // current name).
             List<Query> orQueries = new ArrayList<>();
-
-            // Sub-query for the current (primary) field name
-            Query primarySub = morphium.createQueryFor(entityClass);
-            applySingleFieldCondition(primarySub, mongoField, cond, args, morphium, entityClass);
-            orQueries.add(primarySub);
-
-            // Sub-queries for each alias — using rawQuery to bypass ARHelper resolution
-            for (String alias : aliases) {
-                Query aliasSub = morphium.createQueryFor(entityClass);
-                aliasSub.rawQuery(buildRawCondition(alias, cond, args));
-                orQueries.add(aliasSub);
+            List<String> allFields = new ArrayList<>();
+            allFields.add(mongoField);
+            allFields.addAll(aliases);
+            for (String f : allFields) {
+                Query sub = morphium.createQueryFor(entityClass);
+                sub.rawQuery(buildRawCondition(f, cond, args));
+                orQueries.add(sub);
             }
             query.or(orQueries);
         } else {
-            applySingleFieldCondition(query, mongoField, cond, args, morphium, entityClass);
+            // No aliases — use Morphium's fluent Query API (query.f().eq() etc.)
+            // which is composable: multiple AND conditions accumulate on the same query.
+            // We cannot use rawQuery() here because it replaces the whole query.
+            applyFluentCondition(query, mongoField, cond, args, morphium, entityClass);
         }
     }
 
+    /**
+     * Applies a single condition using Morphium's fluent Query API.
+     * Used for non-aliased fields where conditions accumulate on the same query via AND.
+     */
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void applySingleFieldCondition(Query query,
-                                                   String mongoField,
-                                                   Condition cond,
-                                                   Object[] args,
-                                                   Morphium morphium,
-                                                   Class entityClass) {
+    private static void applyFluentCondition(Query query,
+                                              String mongoField,
+                                              Condition cond,
+                                              Object[] args,
+                                              Morphium morphium,
+                                              Class entityClass) {
         var field = query.f(mongoField);
 
         switch (cond.operator()) {
@@ -146,10 +149,7 @@ public final class QueryExecutor {
             case NIN -> field.nin((Collection) args[cond.paramIndex()]);
             case LIKE -> {
                 String pattern = args[cond.paramIndex()].toString();
-                // Convert SQL LIKE pattern to regex: % → .*, _ → .
-                String regex = pattern
-                        .replace("%", ".*")
-                        .replace("_", ".");
+                String regex = pattern.replace("%", ".*").replace("_", ".");
                 field.matches(Pattern.compile(regex));
             }
             case STARTS_WITH -> {
@@ -164,7 +164,6 @@ public final class QueryExecutor {
             case NOT_CONTAINS -> field.ne(args[cond.paramIndex()]);
             case IS_EMPTY -> field.size(0);
             case IS_NOT_EMPTY -> {
-                // {$nor: [{field: {$size: 0}}]} — matches docs where array is not empty
                 Query sub = morphium.createQueryFor(entityClass);
                 sub.f(mongoField).size(0);
                 query.nor(sub);
@@ -172,7 +171,7 @@ public final class QueryExecutor {
             case SIZE -> field.size(((Number) args[cond.paramIndex()]).intValue());
             case MATCHES -> field.matches(args[cond.paramIndex()].toString());
             case IGNORE_CASE -> {
-                String val = java.util.regex.Pattern.quote(args[cond.paramIndex()].toString());
+                String val = Pattern.quote(args[cond.paramIndex()].toString());
                 field.matches("^" + val + "$", "i");
             }
             case IS_NULL -> field.eq(null);
@@ -202,35 +201,34 @@ public final class QueryExecutor {
         try {
             return morphium.getARHelper().getMongoFieldName(entityClass, javaFieldName);
         } catch (Exception e) {
-            // Fallback: use the Java field name as-is
             return javaFieldName;
         }
     }
 
     /**
-     * Builds a raw MongoDB query condition for an alias field name.
-     * This bypasses ARHelper resolution so the alias name is used as-is.
+     * Builds a raw MongoDB query condition map for the given field name and operator.
+     * Used for alias sub-queries via {@code query.rawQuery()}.
+     * Uses null-safe maps throughout since argument values may be null.
      */
-    @SuppressWarnings({"unchecked", "rawtypes"})
     private static Map<String, Object> buildRawCondition(String fieldName,
                                                           Condition cond,
                                                           Object[] args) {
         Map<String, Object> result = new LinkedHashMap<>();
         switch (cond.operator()) {
             case EQ -> result.put(fieldName, args[cond.paramIndex()]);
-            case NE -> result.put(fieldName, Map.of("$ne", args[cond.paramIndex()]));
-            case GT -> result.put(fieldName, Map.of("$gt", args[cond.paramIndex()]));
-            case GTE -> result.put(fieldName, Map.of("$gte", args[cond.paramIndex()]));
-            case LT -> result.put(fieldName, Map.of("$lt", args[cond.paramIndex()]));
-            case LTE -> result.put(fieldName, Map.of("$lte", args[cond.paramIndex()]));
+            case NE -> result.put(fieldName, nullSafeOp("$ne", args[cond.paramIndex()]));
+            case GT -> result.put(fieldName, nullSafeOp("$gt", args[cond.paramIndex()]));
+            case GTE -> result.put(fieldName, nullSafeOp("$gte", args[cond.paramIndex()]));
+            case LT -> result.put(fieldName, nullSafeOp("$lt", args[cond.paramIndex()]));
+            case LTE -> result.put(fieldName, nullSafeOp("$lte", args[cond.paramIndex()]));
             case BETWEEN -> {
                 Map<String, Object> range = new LinkedHashMap<>();
                 range.put("$gte", args[cond.paramIndex()]);
                 range.put("$lte", args[cond.paramIndex2()]);
                 result.put(fieldName, range);
             }
-            case IN -> result.put(fieldName, Map.of("$in", args[cond.paramIndex()]));
-            case NIN -> result.put(fieldName, Map.of("$nin", args[cond.paramIndex()]));
+            case IN -> result.put(fieldName, nullSafeOp("$in", args[cond.paramIndex()]));
+            case NIN -> result.put(fieldName, nullSafeOp("$nin", args[cond.paramIndex()]));
             case LIKE -> {
                 String pattern = args[cond.paramIndex()].toString()
                         .replace("%", ".*").replace("_", ".");
@@ -239,7 +237,7 @@ public final class QueryExecutor {
             case STARTS_WITH -> result.put(fieldName, Map.of("$regex", "^" + Pattern.quote(args[cond.paramIndex()].toString())));
             case ENDS_WITH -> result.put(fieldName, Map.of("$regex", Pattern.quote(args[cond.paramIndex()].toString()) + "$"));
             case CONTAINS -> result.put(fieldName, args[cond.paramIndex()]);
-            case NOT_CONTAINS -> result.put(fieldName, Map.of("$ne", args[cond.paramIndex()]));
+            case NOT_CONTAINS -> result.put(fieldName, nullSafeOp("$ne", args[cond.paramIndex()]));
             case MATCHES -> result.put(fieldName, Map.of("$regex", args[cond.paramIndex()].toString()));
             case IGNORE_CASE -> {
                 Map<String, Object> regex = new LinkedHashMap<>();
@@ -248,11 +246,7 @@ public final class QueryExecutor {
                 result.put(fieldName, regex);
             }
             case IS_NULL -> result.put(fieldName, null);
-            case IS_NOT_NULL -> {
-                Map<String, Object> ne = new LinkedHashMap<>();
-                ne.put("$ne", null);
-                result.put(fieldName, ne);
-            }
+            case IS_NOT_NULL -> result.put(fieldName, nullSafeOp("$ne", null));
             case IS_TRUE -> result.put(fieldName, true);
             case IS_FALSE -> result.put(fieldName, false);
             case IS_EMPTY -> result.put(fieldName, Map.of("$size", 0));
@@ -263,8 +257,17 @@ public final class QueryExecutor {
     }
 
     /**
+     * Creates a single-entry operator map that tolerates null values.
+     * {@code Map.of()} throws NPE for null values; this does not.
+     */
+    private static Map<String, Object> nullSafeOp(String op, Object value) {
+        Map<String, Object> map = new LinkedHashMap<>(1);
+        map.put(op, value);
+        return map;
+    }
+
+    /**
      * Returns the @Aliases values for the given Java field, or an empty list if none.
-     * This enables queries to match documents stored under old field names.
      */
     @SuppressWarnings("unchecked")
     private static List<String> resolveAliases(Morphium morphium,

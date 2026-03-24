@@ -58,7 +58,7 @@ class QueryExecutorAliasTest {
     @Test
     @DisplayName("Query on aliased field generates $or with current name + aliases")
     void queryOnAliasedFieldGeneratesOr() {
-        // findByOtaUpdateId → should query {$or: [{otaUpdateId: val}, {updateId: val}]}
+        // findByOtaUpdateId → should query {$or: [{ota_update_id: val}, {updateId: val}]}
         QueryDescriptor descriptor = new QueryDescriptor(
                 Prefix.FIND,
                 List.of(new Condition("otaUpdateId", Operator.EQ, 0)),
@@ -185,13 +185,12 @@ class QueryExecutorAliasTest {
         Class entityClass = OtaUpdate.class;
         Query query = morphium.createQueryFor(entityClass);
 
-        // Use reflection-free approach: call the same code path as QueryExecutor
+        // Build query by calling QueryExecutor.applyCondition via reflection
         boolean isOr = descriptor.combinator() == Combinator.OR;
         if (isOr && descriptor.conditions().size() > 1) {
             List<Query> orQueries = new ArrayList<>();
             for (Condition cond : descriptor.conditions()) {
                 Query sub = morphium.createQueryFor(entityClass);
-                QueryExecutor.class.getName(); // just to ensure class is loaded
                 callApplyCondition(sub, cond, args, morphium, entityClass);
                 orQueries.add(sub);
             }
@@ -207,8 +206,7 @@ class QueryExecutorAliasTest {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private void callApplyCondition(Query query, Condition cond, Object[] args,
                                      Morphium morphium, Class entityClass) {
-        // We call the method via a test repository to go through QueryExecutor.execute
-        // but since we want to test the internal condition logic, we use reflection
+        // Call the private applyCondition method via reflection to test internal logic
         try {
             var method = QueryExecutor.class.getDeclaredMethod(
                     "applyCondition", Query.class, Condition.class,
