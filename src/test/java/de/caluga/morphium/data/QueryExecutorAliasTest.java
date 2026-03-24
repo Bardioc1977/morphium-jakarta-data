@@ -221,6 +221,52 @@ class QueryExecutorAliasTest {
         assertThat(queriedFields).containsExactlyInAnyOrder("ota_update_id", "updateId");
     }
 
+    @Test
+    @DisplayName("OR combinator with aliased field generates nested $or")
+    void orCombinatorWithAliasedField() {
+        // findByCampaignNumberOrOtaUpdateId — OR combinator, one aliased field
+        QueryDescriptor descriptor = new QueryDescriptor(
+                Prefix.FIND,
+                List.of(
+                        new Condition("campaignNumber", Operator.EQ, 0),
+                        new Condition("otaUpdateId", Operator.EQ, 1)
+                ),
+                Combinator.OR,
+                List.of(),
+                ReturnType.LIST
+        );
+
+        Query<?> query = buildQuery(descriptor, new Object[]{"CN-001", "update-123"});
+        Map<String, Object> queryObj = query.toQueryObject();
+
+        // The top-level OR should contain: one branch for campaignNumber,
+        // and one branch that itself contains $or for the aliased otaUpdateId
+        assertThat(queryObj).containsKey("$or");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> orList = (List<Map<String, Object>>) queryObj.get("$or");
+        assertThat(orList).hasSize(2);
+
+        // One branch should have campaign_number
+        boolean hasCampaignNumber = orList.stream()
+                .anyMatch(entry -> entry.containsKey("campaign_number"));
+        assertThat(hasCampaignNumber).as("top-level $or should contain campaign_number branch").isTrue();
+
+        // The other branch should have a nested $or for the aliased field
+        @SuppressWarnings("unchecked")
+        Optional<Map<String, Object>> aliasedBranch = orList.stream()
+                .filter(entry -> entry.containsKey("$or"))
+                .findFirst();
+        assertThat(aliasedBranch).as("top-level $or should contain a nested $or for aliased field").isPresent();
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> nestedOr = (List<Map<String, Object>>) aliasedBranch.get().get("$or");
+        Set<String> nestedFields = new HashSet<>();
+        for (Map<String, Object> sub : nestedOr) {
+            nestedFields.addAll(sub.keySet());
+        }
+        assertThat(nestedFields).containsExactlyInAnyOrder("ota_update_id", "updateId");
+    }
+
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Query<?> buildQuery(QueryDescriptor descriptor, Object[] args) {
         Class entityClass = OtaUpdate.class;

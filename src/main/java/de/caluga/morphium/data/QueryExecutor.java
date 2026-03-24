@@ -6,10 +6,13 @@ import de.caluga.morphium.annotations.Aliases;
 import de.caluga.morphium.query.Query;
 import de.caluga.morphium.data.QueryDescriptor.*;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.lang.reflect.Field;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * Executes a {@link QueryDescriptor} against a Morphium instance at runtime.
@@ -17,6 +20,8 @@ import java.util.stream.Stream;
  * {@code morphium.getARHelper().getMongoFieldName()}.
  */
 public final class QueryExecutor {
+
+    private static final Logger log = LoggerFactory.getLogger(QueryExecutor.class);
 
     private QueryExecutor() {}
 
@@ -151,8 +156,7 @@ public final class QueryExecutor {
             case IN -> field.in((Collection) args[cond.paramIndex()]);
             case NIN -> field.nin((Collection) args[cond.paramIndex()]);
             case LIKE -> {
-                String pattern = args[cond.paramIndex()].toString();
-                String regex = pattern.replace("%", ".*").replace("_", ".");
+                String regex = likeToRegex(args[cond.paramIndex()].toString());
                 field.matches(Pattern.compile(regex));
             }
             case STARTS_WITH -> {
@@ -210,7 +214,8 @@ public final class QueryExecutor {
 
     /**
      * Builds a raw MongoDB query condition map for the given field name and operator.
-     * Used for alias sub-queries via {@code query.rawQuery()}.
+     * Intended for internal use by alias handling, where this map is wrapped in a
+     * {@link FilterExpression} and attached to the main query via {@code query.addChild()}.
      * <p>
      * Comparison operators (EQ, NE, GT, GTE, LT, LTE, IN, NIN, IS_NULL, IS_NOT_NULL,
      * IS_TRUE, IS_FALSE) are null-safe. String-based operators (LIKE, STARTS_WITH,
@@ -237,9 +242,8 @@ public final class QueryExecutor {
             case IN -> result.put(fieldName, nullSafeOp("$in", args[cond.paramIndex()]));
             case NIN -> result.put(fieldName, nullSafeOp("$nin", args[cond.paramIndex()]));
             case LIKE -> {
-                String pattern = args[cond.paramIndex()].toString()
-                        .replace("%", ".*").replace("_", ".");
-                result.put(fieldName, Map.of("$regex", pattern));
+                String regex = likeToRegex(args[cond.paramIndex()].toString());
+                result.put(fieldName, Map.of("$regex", regex));
             }
             case STARTS_WITH -> result.put(fieldName, Map.of("$regex", "^" + Pattern.quote(args[cond.paramIndex()].toString())));
             case ENDS_WITH -> result.put(fieldName, Map.of("$regex", Pattern.quote(args[cond.paramIndex()].toString()) + "$"));
@@ -286,8 +290,34 @@ public final class QueryExecutor {
                 return List.of(javaField.getAnnotation(Aliases.class).value());
             }
         } catch (Exception e) {
-            // ignore — no aliases
+            log.trace("Could not resolve aliases for field '{}' on {}: {}",
+                    javaFieldName, entityClass.getSimpleName(), e.getMessage());
         }
         return List.of();
+    }
+
+    /**
+     * Converts a SQL LIKE pattern to a regex, escaping regex metacharacters
+     * while converting {@code %} to {@code .*} and {@code _} to {@code .}.
+     */
+    static String likeToRegex(String likePattern) {
+        StringBuilder regex = new StringBuilder();
+        StringBuilder literal = new StringBuilder();
+        for (int i = 0; i < likePattern.length(); i++) {
+            char c = likePattern.charAt(i);
+            if (c == '%' || c == '_') {
+                if (!literal.isEmpty()) {
+                    regex.append(Pattern.quote(literal.toString()));
+                    literal.setLength(0);
+                }
+                regex.append(c == '%' ? ".*" : ".");
+            } else {
+                literal.append(c);
+            }
+        }
+        if (!literal.isEmpty()) {
+            regex.append(Pattern.quote(literal.toString()));
+        }
+        return regex.toString();
     }
 }
