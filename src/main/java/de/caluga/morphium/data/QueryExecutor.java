@@ -1,9 +1,11 @@
 package de.caluga.morphium.data;
 
 import de.caluga.morphium.Morphium;
+import de.caluga.morphium.annotations.Aliases;
 import de.caluga.morphium.query.Query;
 import de.caluga.morphium.data.QueryDescriptor.*;
 
+import java.lang.reflect.Field;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -94,6 +96,39 @@ public final class QueryExecutor {
                                         Morphium morphium,
                                         Class entityClass) {
         String mongoField = resolveMongoField(morphium, entityClass, cond.field());
+        List<String> aliases = resolveAliases(morphium, entityClass, cond.field());
+
+        if (!aliases.isEmpty()) {
+            // Field has @Aliases — build $or to match current name + all aliases.
+            // The primary field uses query.f() (normal resolution), but alias names
+            // must be used as raw MongoDB field names (query.f() would resolve them
+            // back to the current name via ARHelper).
+            List<Query> orQueries = new ArrayList<>();
+
+            // Sub-query for the current (primary) field name
+            Query primarySub = morphium.createQueryFor(entityClass);
+            applySingleFieldCondition(primarySub, mongoField, cond, args, morphium, entityClass);
+            orQueries.add(primarySub);
+
+            // Sub-queries for each alias — using rawQuery to bypass ARHelper resolution
+            for (String alias : aliases) {
+                Query aliasSub = morphium.createQueryFor(entityClass);
+                aliasSub.rawQuery(buildRawCondition(alias, cond, args));
+                orQueries.add(aliasSub);
+            }
+            query.or(orQueries);
+        } else {
+            applySingleFieldCondition(query, mongoField, cond, args, morphium, entityClass);
+        }
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static void applySingleFieldCondition(Query query,
+                                                   String mongoField,
+                                                   Condition cond,
+                                                   Object[] args,
+                                                   Morphium morphium,
+                                                   Class entityClass) {
         var field = query.f(mongoField);
 
         switch (cond.operator()) {
@@ -170,5 +205,79 @@ public final class QueryExecutor {
             // Fallback: use the Java field name as-is
             return javaFieldName;
         }
+    }
+
+    /**
+     * Builds a raw MongoDB query condition for an alias field name.
+     * This bypasses ARHelper resolution so the alias name is used as-is.
+     */
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private static Map<String, Object> buildRawCondition(String fieldName,
+                                                          Condition cond,
+                                                          Object[] args) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        switch (cond.operator()) {
+            case EQ -> result.put(fieldName, args[cond.paramIndex()]);
+            case NE -> result.put(fieldName, Map.of("$ne", args[cond.paramIndex()]));
+            case GT -> result.put(fieldName, Map.of("$gt", args[cond.paramIndex()]));
+            case GTE -> result.put(fieldName, Map.of("$gte", args[cond.paramIndex()]));
+            case LT -> result.put(fieldName, Map.of("$lt", args[cond.paramIndex()]));
+            case LTE -> result.put(fieldName, Map.of("$lte", args[cond.paramIndex()]));
+            case BETWEEN -> {
+                Map<String, Object> range = new LinkedHashMap<>();
+                range.put("$gte", args[cond.paramIndex()]);
+                range.put("$lte", args[cond.paramIndex2()]);
+                result.put(fieldName, range);
+            }
+            case IN -> result.put(fieldName, Map.of("$in", args[cond.paramIndex()]));
+            case NIN -> result.put(fieldName, Map.of("$nin", args[cond.paramIndex()]));
+            case LIKE -> {
+                String pattern = args[cond.paramIndex()].toString()
+                        .replace("%", ".*").replace("_", ".");
+                result.put(fieldName, Map.of("$regex", pattern));
+            }
+            case STARTS_WITH -> result.put(fieldName, Map.of("$regex", "^" + Pattern.quote(args[cond.paramIndex()].toString())));
+            case ENDS_WITH -> result.put(fieldName, Map.of("$regex", Pattern.quote(args[cond.paramIndex()].toString()) + "$"));
+            case CONTAINS -> result.put(fieldName, args[cond.paramIndex()]);
+            case NOT_CONTAINS -> result.put(fieldName, Map.of("$ne", args[cond.paramIndex()]));
+            case MATCHES -> result.put(fieldName, Map.of("$regex", args[cond.paramIndex()].toString()));
+            case IGNORE_CASE -> {
+                Map<String, Object> regex = new LinkedHashMap<>();
+                regex.put("$regex", "^" + Pattern.quote(args[cond.paramIndex()].toString()) + "$");
+                regex.put("$options", "i");
+                result.put(fieldName, regex);
+            }
+            case IS_NULL -> result.put(fieldName, null);
+            case IS_NOT_NULL -> {
+                Map<String, Object> ne = new LinkedHashMap<>();
+                ne.put("$ne", null);
+                result.put(fieldName, ne);
+            }
+            case IS_TRUE -> result.put(fieldName, true);
+            case IS_FALSE -> result.put(fieldName, false);
+            case IS_EMPTY -> result.put(fieldName, Map.of("$size", 0));
+            case IS_NOT_EMPTY -> result.put("$nor", List.of(Map.of(fieldName, Map.of("$size", 0))));
+            case SIZE -> result.put(fieldName, Map.of("$size", ((Number) args[cond.paramIndex()]).intValue()));
+        }
+        return result;
+    }
+
+    /**
+     * Returns the @Aliases values for the given Java field, or an empty list if none.
+     * This enables queries to match documents stored under old field names.
+     */
+    @SuppressWarnings("unchecked")
+    private static List<String> resolveAliases(Morphium morphium,
+                                                Class entityClass,
+                                                String javaFieldName) {
+        try {
+            Field javaField = morphium.getARHelper().getField(entityClass, javaFieldName);
+            if (javaField != null && javaField.isAnnotationPresent(Aliases.class)) {
+                return List.of(javaField.getAnnotation(Aliases.class).value());
+            }
+        } catch (Exception e) {
+            // ignore — no aliases
+        }
+        return List.of();
     }
 }
