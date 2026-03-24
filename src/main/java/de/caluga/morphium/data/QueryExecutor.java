@@ -105,15 +105,12 @@ public final class QueryExecutor {
 
         if (!aliases.isEmpty()) {
             // Field has @Aliases — build $or to match current name + all aliases.
-            // We use FilterExpression with "$or" field and addChild() so that each
-            // aliased condition gets its own $or group in the andExpr list. This
-            // ensures multiple aliased fields are combined with $and correctly
-            // (query.or() would merge them into a single flat $or).
+            // LinkedHashSet deduplicates in case an alias equals the current mongo name.
             List<Map<String, Object>> orBranches = new ArrayList<>();
-            List<String> allFields = new ArrayList<>();
-            allFields.add(mongoField);
-            allFields.addAll(aliases);
-            for (String f : allFields) {
+            Set<String> uniqueFields = new LinkedHashSet<>();
+            uniqueFields.add(mongoField);
+            uniqueFields.addAll(aliases);
+            for (String f : uniqueFields) {
                 orBranches.add(buildRawCondition(f, cond, args));
             }
             FilterExpression fe = new FilterExpression();
@@ -121,69 +118,24 @@ public final class QueryExecutor {
             fe.setValue(orBranches);
             query.addChild(fe);
         } else {
-            // No aliases — use Morphium's fluent Query API (query.f().eq() etc.)
-            // which is composable: multiple AND conditions accumulate on the same query.
-            // We cannot use rawQuery() here because it replaces the whole query.
-            applyFluentCondition(query, mongoField, cond, args, morphium, entityClass);
+            // No aliases — build raw condition and add as FilterExpression.
+            // Uses the same buildRawCondition() as the alias path, keeping
+            // operator handling in a single place.
+            addRawConditionToQuery(query, buildRawCondition(mongoField, cond, args));
         }
     }
 
     /**
-     * Applies a single condition using Morphium's fluent Query API.
-     * Used for non-aliased fields where conditions accumulate on the same query via AND.
+     * Converts a raw condition map (from {@link #buildRawCondition}) to
+     * {@link FilterExpression}s and adds them to the query.
      */
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void applyFluentCondition(Query query,
-                                              String mongoField,
-                                              Condition cond,
-                                              Object[] args,
-                                              Morphium morphium,
-                                              Class entityClass) {
-        var field = query.f(mongoField);
-
-        switch (cond.operator()) {
-            case EQ -> field.eq(args[cond.paramIndex()]);
-            case NE -> field.ne(args[cond.paramIndex()]);
-            case GT -> field.gt(args[cond.paramIndex()]);
-            case GTE -> field.gte(args[cond.paramIndex()]);
-            case LT -> field.lt(args[cond.paramIndex()]);
-            case LTE -> field.lte(args[cond.paramIndex()]);
-            case BETWEEN -> {
-                field.gte(args[cond.paramIndex()]);
-                query.f(mongoField).lte(args[cond.paramIndex2()]);
-            }
-            case IN -> field.in((Collection) args[cond.paramIndex()]);
-            case NIN -> field.nin((Collection) args[cond.paramIndex()]);
-            case LIKE -> {
-                String regex = likeToRegex(args[cond.paramIndex()].toString());
-                field.matches(Pattern.compile(regex));
-            }
-            case STARTS_WITH -> {
-                String val = Pattern.quote(args[cond.paramIndex()].toString());
-                field.matches(Pattern.compile("^" + val));
-            }
-            case ENDS_WITH -> {
-                String val = Pattern.quote(args[cond.paramIndex()].toString());
-                field.matches(Pattern.compile(val + "$"));
-            }
-            case CONTAINS -> field.eq(args[cond.paramIndex()]);
-            case NOT_CONTAINS -> field.ne(args[cond.paramIndex()]);
-            case IS_EMPTY -> field.size(0);
-            case IS_NOT_EMPTY -> {
-                Query sub = morphium.createQueryFor(entityClass);
-                sub.f(mongoField).size(0);
-                query.nor(sub);
-            }
-            case SIZE -> field.size(((Number) args[cond.paramIndex()]).intValue());
-            case MATCHES -> field.matches(args[cond.paramIndex()].toString());
-            case IGNORE_CASE -> {
-                String val = Pattern.quote(args[cond.paramIndex()].toString());
-                field.matches("^" + val + "$", "i");
-            }
-            case IS_NULL -> field.eq(null);
-            case IS_NOT_NULL -> field.ne(null);
-            case IS_TRUE -> field.eq(true);
-            case IS_FALSE -> field.eq(false);
+    @SuppressWarnings("rawtypes")
+    private static void addRawConditionToQuery(Query query, Map<String, Object> rawCondition) {
+        for (Map.Entry<String, Object> entry : rawCondition.entrySet()) {
+            FilterExpression fe = new FilterExpression();
+            fe.setField(entry.getKey());
+            fe.setValue(entry.getValue());
+            query.addChild(fe);
         }
     }
 
