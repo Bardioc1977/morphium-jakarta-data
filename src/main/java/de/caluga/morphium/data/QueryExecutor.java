@@ -1,5 +1,6 @@
 package de.caluga.morphium.data;
 
+import de.caluga.morphium.FilterExpression;
 import de.caluga.morphium.Morphium;
 import de.caluga.morphium.annotations.Aliases;
 import de.caluga.morphium.query.Query;
@@ -90,29 +91,31 @@ public final class QueryExecutor {
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void applyCondition(Query query,
-                                        Condition cond,
-                                        Object[] args,
-                                        Morphium morphium,
-                                        Class entityClass) {
+    static void applyCondition(Query query,
+                               Condition cond,
+                               Object[] args,
+                               Morphium morphium,
+                               Class entityClass) {
         String mongoField = resolveMongoField(morphium, entityClass, cond.field());
         List<String> aliases = resolveAliases(morphium, entityClass, cond.field());
 
         if (!aliases.isEmpty()) {
             // Field has @Aliases — build $or to match current name + all aliases.
-            // Each sub-query uses rawQuery(buildRawCondition()) so that alias field
-            // names bypass ARHelper resolution (which would map them back to the
-            // current name).
-            List<Query> orQueries = new ArrayList<>();
+            // We use FilterExpression with "$or" field and addChild() so that each
+            // aliased condition gets its own $or group in the andExpr list. This
+            // ensures multiple aliased fields are combined with $and correctly
+            // (query.or() would merge them into a single flat $or).
+            List<Map<String, Object>> orBranches = new ArrayList<>();
             List<String> allFields = new ArrayList<>();
             allFields.add(mongoField);
             allFields.addAll(aliases);
             for (String f : allFields) {
-                Query sub = morphium.createQueryFor(entityClass);
-                sub.rawQuery(buildRawCondition(f, cond, args));
-                orQueries.add(sub);
+                orBranches.add(buildRawCondition(f, cond, args));
             }
-            query.or(orQueries);
+            FilterExpression fe = new FilterExpression();
+            fe.setField("$or");
+            fe.setValue(orBranches);
+            query.addChild(fe);
         } else {
             // No aliases — use Morphium's fluent Query API (query.f().eq() etc.)
             // which is composable: multiple AND conditions accumulate on the same query.
@@ -208,7 +211,11 @@ public final class QueryExecutor {
     /**
      * Builds a raw MongoDB query condition map for the given field name and operator.
      * Used for alias sub-queries via {@code query.rawQuery()}.
-     * Uses null-safe maps throughout since argument values may be null.
+     * <p>
+     * Comparison operators (EQ, NE, GT, GTE, LT, LTE, IN, NIN, IS_NULL, IS_NOT_NULL,
+     * IS_TRUE, IS_FALSE) are null-safe. String-based operators (LIKE, STARTS_WITH,
+     * ENDS_WITH, MATCHES, IGNORE_CASE) call {@code toString()} on the argument and
+     * will throw {@link NullPointerException} if the argument is null.
      */
     private static Map<String, Object> buildRawCondition(String fieldName,
                                                           Condition cond,

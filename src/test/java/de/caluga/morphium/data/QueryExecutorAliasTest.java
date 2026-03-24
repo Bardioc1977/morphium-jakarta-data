@@ -58,7 +58,6 @@ class QueryExecutorAliasTest {
     @Test
     @DisplayName("Query on aliased field generates $or with current name + aliases")
     void queryOnAliasedFieldGeneratesOr() {
-        // findByOtaUpdateId → should query {$or: [{ota_update_id: val}, {updateId: val}]}
         QueryDescriptor descriptor = new QueryDescriptor(
                 Prefix.FIND,
                 List.of(new Condition("otaUpdateId", Operator.EQ, 0)),
@@ -70,7 +69,6 @@ class QueryExecutorAliasTest {
         Query<?> query = buildQuery(descriptor, new Object[]{"update-123"});
         Map<String, Object> queryObj = query.toQueryObject();
 
-        // Must contain $or with both field names
         assertThat(queryObj).containsKey("$or");
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> orList = (List<Map<String, Object>>) queryObj.get("$or");
@@ -86,7 +84,6 @@ class QueryExecutorAliasTest {
     @Test
     @DisplayName("Query on non-aliased field generates simple condition (no $or)")
     void queryOnNonAliasedFieldIsSimple() {
-        // findByCampaignNumber → should NOT generate $or
         QueryDescriptor descriptor = new QueryDescriptor(
                 Prefix.FIND,
                 List.of(new Condition("campaignNumber", Operator.EQ, 0)),
@@ -105,7 +102,6 @@ class QueryExecutorAliasTest {
     @Test
     @DisplayName("Combined AND query with aliased + non-aliased fields")
     void combinedAndQueryWithAliasedField() {
-        // findByCampaignNumberAndOtaUpdateId
         QueryDescriptor descriptor = new QueryDescriptor(
                 Prefix.FIND,
                 List.of(
@@ -124,20 +120,32 @@ class QueryExecutorAliasTest {
         assertThat(queryObj).containsKey("$and");
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> andList = (List<Map<String, Object>>) queryObj.get("$and");
-
-        // One entry for campaignNumber, one $or entry for otaUpdateId/updateId
         assertThat(andList).hasSizeGreaterThanOrEqualTo(2);
 
-        String flatJson = queryObj.toString();
-        assertThat(flatJson).contains("campaign_number");
-        assertThat(flatJson).contains("ota_update_id");
-        assertThat(flatJson).contains("updateId");
+        // Find the campaign_number condition in $and
+        boolean hasCampaignNumber = andList.stream()
+                .anyMatch(entry -> entry.containsKey("campaign_number"));
+        assertThat(hasCampaignNumber).as("$and should contain campaign_number condition").isTrue();
+
+        // Find the $or sub-condition for otaUpdateId aliases
+        @SuppressWarnings("unchecked")
+        Optional<Map<String, Object>> orEntry = andList.stream()
+                .filter(entry -> entry.containsKey("$or"))
+                .findFirst();
+        assertThat(orEntry).as("$and should contain an $or entry for aliased field").isPresent();
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> orList = (List<Map<String, Object>>) orEntry.get().get("$or");
+        Set<String> orFields = new HashSet<>();
+        for (Map<String, Object> sub : orList) {
+            orFields.addAll(sub.keySet());
+        }
+        assertThat(orFields).containsExactlyInAnyOrder("ota_update_id", "updateId");
     }
 
     @Test
     @DisplayName("Multiple aliased fields each get their own $or")
     void multipleAliasedFields() {
-        // findByOtaUpdateIdAndOtaUploadDate
         QueryDescriptor descriptor = new QueryDescriptor(
                 Prefix.FIND,
                 List.of(
@@ -151,17 +159,36 @@ class QueryExecutorAliasTest {
 
         Query<?> query = buildQuery(descriptor, new Object[]{"update-123", "2025-01-01"});
         Map<String, Object> queryObj = query.toQueryObject();
-        String flatJson = queryObj.toString();
 
-        // Both alias names must appear
-        assertThat(flatJson).contains("ota_update_id");
-        assertThat(flatJson).contains("updateId");
-        assertThat(flatJson).contains("ota_upload_date");
-        assertThat(flatJson).contains("uploadDate");
+        // Should have $and with two $or groups
+        assertThat(queryObj).containsKey("$and");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> andList = (List<Map<String, Object>>) queryObj.get("$and");
+
+        // Collect all $or groups from the $and list
+        List<Set<String>> orFieldSets = new ArrayList<>();
+        for (Map<String, Object> entry : andList) {
+            if (entry.containsKey("$or")) {
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> orList = (List<Map<String, Object>>) entry.get("$or");
+                Set<String> fields = new HashSet<>();
+                for (Map<String, Object> sub : orList) {
+                    fields.addAll(sub.keySet());
+                }
+                orFieldSets.add(fields);
+            }
+        }
+        assertThat(orFieldSets).as("should have two separate $or groups").hasSize(2);
+
+        // One $or for otaUpdateId aliases, one for otaUploadDate aliases
+        assertThat(orFieldSets).anySatisfy(fields ->
+                assertThat(fields).containsExactlyInAnyOrder("ota_update_id", "updateId"));
+        assertThat(orFieldSets).anySatisfy(fields ->
+                assertThat(fields).containsExactlyInAnyOrder("ota_upload_date", "uploadDate"));
     }
 
     @Test
-    @DisplayName("IN operator on aliased field generates $or")
+    @DisplayName("IN operator on aliased field generates $or with $in payload")
     void inOperatorOnAliasedField() {
         QueryDescriptor descriptor = new QueryDescriptor(
                 Prefix.FIND,
@@ -171,13 +198,27 @@ class QueryExecutorAliasTest {
                 ReturnType.LIST
         );
 
-        Query<?> query = buildQuery(descriptor, new Object[]{List.of("u1", "u2")});
+        List<String> searchValues = List.of("u1", "u2");
+        Query<?> query = buildQuery(descriptor, new Object[]{searchValues});
         Map<String, Object> queryObj = query.toQueryObject();
 
         assertThat(queryObj).containsKey("$or");
-        String flatJson = queryObj.toString();
-        assertThat(flatJson).contains("ota_update_id");
-        assertThat(flatJson).contains("updateId");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> orList = (List<Map<String, Object>>) queryObj.get("$or");
+        assertThat(orList).hasSize(2);
+
+        // Verify each $or branch contains $in with the correct values
+        Set<String> queriedFields = new HashSet<>();
+        for (Map<String, Object> sub : orList) {
+            for (Map.Entry<String, Object> e : sub.entrySet()) {
+                queriedFields.add(e.getKey());
+                @SuppressWarnings("unchecked")
+                Map<String, Object> opMap = (Map<String, Object>) e.getValue();
+                assertThat(opMap).containsKey("$in");
+                assertThat(opMap.get("$in")).isEqualTo(searchValues);
+            }
+        }
+        assertThat(queriedFields).containsExactlyInAnyOrder("ota_update_id", "updateId");
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})
@@ -185,36 +226,20 @@ class QueryExecutorAliasTest {
         Class entityClass = OtaUpdate.class;
         Query query = morphium.createQueryFor(entityClass);
 
-        // Build query by calling QueryExecutor.applyCondition via reflection
         boolean isOr = descriptor.combinator() == Combinator.OR;
         if (isOr && descriptor.conditions().size() > 1) {
             List<Query> orQueries = new ArrayList<>();
             for (Condition cond : descriptor.conditions()) {
                 Query sub = morphium.createQueryFor(entityClass);
-                callApplyCondition(sub, cond, args, morphium, entityClass);
+                QueryExecutor.applyCondition(sub, cond, args, morphium, entityClass);
                 orQueries.add(sub);
             }
             query.or(orQueries);
         } else {
             for (Condition cond : descriptor.conditions()) {
-                callApplyCondition(query, cond, args, morphium, entityClass);
+                QueryExecutor.applyCondition(query, cond, args, morphium, entityClass);
             }
         }
         return query;
-    }
-
-    @SuppressWarnings({"unchecked", "rawtypes"})
-    private void callApplyCondition(Query query, Condition cond, Object[] args,
-                                     Morphium morphium, Class entityClass) {
-        // Call the private applyCondition method via reflection to test internal logic
-        try {
-            var method = QueryExecutor.class.getDeclaredMethod(
-                    "applyCondition", Query.class, Condition.class,
-                    Object[].class, Morphium.class, Class.class);
-            method.setAccessible(true);
-            method.invoke(null, query, cond, args, morphium, entityClass);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to invoke applyCondition", e);
-        }
     }
 }
