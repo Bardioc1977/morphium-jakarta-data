@@ -2,13 +2,27 @@ package de.caluga.morphium.data;
 
 import de.caluga.morphium.Morphium;
 import de.caluga.morphium.MorphiumConfig;
-import de.caluga.morphium.annotations.*;
-import de.caluga.morphium.data.QueryDescriptor.*;
+import de.caluga.morphium.annotations.Aliases;
+import de.caluga.morphium.annotations.Entity;
+import de.caluga.morphium.annotations.Id;
+import de.caluga.morphium.data.QueryDescriptor.Combinator;
+import de.caluga.morphium.data.QueryDescriptor.Condition;
+import de.caluga.morphium.data.QueryDescriptor.Operator;
+import de.caluga.morphium.data.QueryDescriptor.Prefix;
+import de.caluga.morphium.data.QueryDescriptor.ReturnType;
 import de.caluga.morphium.driver.inmem.InMemoryDriver;
 import de.caluga.morphium.query.Query;
-import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

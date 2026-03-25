@@ -233,7 +233,6 @@ public final class QueryExecutor {
     /**
      * Returns the @Aliases values for the given Java field, or an empty list if none.
      */
-    @SuppressWarnings("unchecked")
     private static List<String> resolveAliases(Morphium morphium,
                                                 Class entityClass,
                                                 String javaFieldName) {
