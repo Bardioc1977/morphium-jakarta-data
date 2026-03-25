@@ -1,12 +1,17 @@
 package de.caluga.morphium.data;
 
+import de.caluga.morphium.FilterExpression;
 import de.caluga.morphium.Morphium;
+import de.caluga.morphium.annotations.Aliases;
 import de.caluga.morphium.query.Query;
 import de.caluga.morphium.data.QueryDescriptor.*;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.lang.reflect.Field;
 import java.util.*;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * Executes a {@link QueryDescriptor} against a Morphium instance at runtime.
@@ -14,6 +19,8 @@ import java.util.stream.Stream;
  * {@code morphium.getARHelper().getMongoFieldName()}.
  */
 public final class QueryExecutor {
+
+    private static final Logger log = LoggerFactory.getLogger(QueryExecutor.class);
 
     private QueryExecutor() {}
 
@@ -63,12 +70,13 @@ public final class QueryExecutor {
         };
     }
 
+    // Visible for testing — called directly by QueryExecutorAliasTest
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void applyConditions(Query query,
-                                         QueryDescriptor descriptor,
-                                         Object[] args,
-                                         Morphium morphium,
-                                         Class entityClass) {
+    static void applyConditions(Query query,
+                                QueryDescriptor descriptor,
+                                Object[] args,
+                                Morphium morphium,
+                                Class entityClass) {
         boolean isOr = descriptor.combinator() == Combinator.OR;
 
         if (isOr && descriptor.conditions().size() > 1) {
@@ -87,63 +95,49 @@ public final class QueryExecutor {
         }
     }
 
+    // Visible for testing — called indirectly via applyConditions
     @SuppressWarnings({"unchecked", "rawtypes"})
-    private static void applyCondition(Query query,
-                                        Condition cond,
-                                        Object[] args,
-                                        Morphium morphium,
-                                        Class entityClass) {
+    static void applyCondition(Query query,
+                               Condition cond,
+                               Object[] args,
+                               Morphium morphium,
+                               Class entityClass) {
         String mongoField = resolveMongoField(morphium, entityClass, cond.field());
-        var field = query.f(mongoField);
+        List<String> aliases = resolveAliases(morphium, entityClass, cond.field());
 
-        switch (cond.operator()) {
-            case EQ -> field.eq(args[cond.paramIndex()]);
-            case NE -> field.ne(args[cond.paramIndex()]);
-            case GT -> field.gt(args[cond.paramIndex()]);
-            case GTE -> field.gte(args[cond.paramIndex()]);
-            case LT -> field.lt(args[cond.paramIndex()]);
-            case LTE -> field.lte(args[cond.paramIndex()]);
-            case BETWEEN -> {
-                field.gte(args[cond.paramIndex()]);
-                query.f(mongoField).lte(args[cond.paramIndex2()]);
+        if (!aliases.isEmpty()) {
+            // Field has @Aliases — build $or to match current name + all aliases.
+            // LinkedHashSet deduplicates in case an alias equals the current mongo name.
+            List<Map<String, Object>> orBranches = new ArrayList<>();
+            Set<String> uniqueFields = new LinkedHashSet<>();
+            uniqueFields.add(mongoField);
+            uniqueFields.addAll(aliases);
+            for (String f : uniqueFields) {
+                orBranches.add(buildRawCondition(f, cond, args));
             }
-            case IN -> field.in((Collection) args[cond.paramIndex()]);
-            case NIN -> field.nin((Collection) args[cond.paramIndex()]);
-            case LIKE -> {
-                String pattern = args[cond.paramIndex()].toString();
-                // Convert SQL LIKE pattern to regex: % → .*, _ → .
-                String regex = pattern
-                        .replace("%", ".*")
-                        .replace("_", ".");
-                field.matches(Pattern.compile(regex));
-            }
-            case STARTS_WITH -> {
-                String val = Pattern.quote(args[cond.paramIndex()].toString());
-                field.matches(Pattern.compile("^" + val));
-            }
-            case ENDS_WITH -> {
-                String val = Pattern.quote(args[cond.paramIndex()].toString());
-                field.matches(Pattern.compile(val + "$"));
-            }
-            case CONTAINS -> field.eq(args[cond.paramIndex()]);
-            case NOT_CONTAINS -> field.ne(args[cond.paramIndex()]);
-            case IS_EMPTY -> field.size(0);
-            case IS_NOT_EMPTY -> {
-                // {$nor: [{field: {$size: 0}}]} — matches docs where array is not empty
-                Query sub = morphium.createQueryFor(entityClass);
-                sub.f(mongoField).size(0);
-                query.nor(sub);
-            }
-            case SIZE -> field.size(((Number) args[cond.paramIndex()]).intValue());
-            case MATCHES -> field.matches(args[cond.paramIndex()].toString());
-            case IGNORE_CASE -> {
-                String val = java.util.regex.Pattern.quote(args[cond.paramIndex()].toString());
-                field.matches("^" + val + "$", "i");
-            }
-            case IS_NULL -> field.eq(null);
-            case IS_NOT_NULL -> field.ne(null);
-            case IS_TRUE -> field.eq(true);
-            case IS_FALSE -> field.eq(false);
+            FilterExpression fe = new FilterExpression();
+            fe.setField("$or");
+            fe.setValue(orBranches);
+            query.addChild(fe);
+        } else {
+            // No aliases — build raw condition and add as FilterExpression.
+            // Uses the same buildRawCondition() as the alias path, keeping
+            // operator handling in a single place.
+            addRawConditionToQuery(query, buildRawCondition(mongoField, cond, args));
+        }
+    }
+
+    /**
+     * Converts a raw condition map (from {@link #buildRawCondition}) to
+     * {@link FilterExpression}s and adds them to the query.
+     */
+    @SuppressWarnings("rawtypes")
+    private static void addRawConditionToQuery(Query query, Map<String, Object> rawCondition) {
+        for (Map.Entry<String, Object> entry : rawCondition.entrySet()) {
+            FilterExpression fe = new FilterExpression();
+            fe.setField(entry.getKey());
+            fe.setValue(entry.getValue());
+            query.addChild(fe);
         }
     }
 
@@ -167,8 +161,115 @@ public final class QueryExecutor {
         try {
             return morphium.getARHelper().getMongoFieldName(entityClass, javaFieldName);
         } catch (Exception e) {
-            // Fallback: use the Java field name as-is
             return javaFieldName;
         }
+    }
+
+    /**
+     * Builds a raw MongoDB query condition map for the given field name and operator.
+     * Intended for internal use by alias handling, where this map is wrapped in a
+     * {@link FilterExpression} and attached to the main query via {@code query.addChild()}.
+     * <p>
+     * Comparison operators (EQ, NE, GT, GTE, LT, LTE, IN, NIN, IS_NULL, IS_NOT_NULL,
+     * IS_TRUE, IS_FALSE) are null-safe. String-based operators (LIKE, STARTS_WITH,
+     * ENDS_WITH, MATCHES, IGNORE_CASE) call {@code toString()} on the argument and
+     * will throw {@link NullPointerException} if the argument is null.
+     */
+    private static Map<String, Object> buildRawCondition(String fieldName,
+                                                          Condition cond,
+                                                          Object[] args) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        switch (cond.operator()) {
+            case EQ -> result.put(fieldName, args[cond.paramIndex()]);
+            case NE -> result.put(fieldName, nullSafeOp("$ne", args[cond.paramIndex()]));
+            case GT -> result.put(fieldName, nullSafeOp("$gt", args[cond.paramIndex()]));
+            case GTE -> result.put(fieldName, nullSafeOp("$gte", args[cond.paramIndex()]));
+            case LT -> result.put(fieldName, nullSafeOp("$lt", args[cond.paramIndex()]));
+            case LTE -> result.put(fieldName, nullSafeOp("$lte", args[cond.paramIndex()]));
+            case BETWEEN -> {
+                Map<String, Object> range = new LinkedHashMap<>();
+                range.put("$gte", args[cond.paramIndex()]);
+                range.put("$lte", args[cond.paramIndex2()]);
+                result.put(fieldName, range);
+            }
+            case IN -> result.put(fieldName, nullSafeOp("$in", args[cond.paramIndex()]));
+            case NIN -> result.put(fieldName, nullSafeOp("$nin", args[cond.paramIndex()]));
+            case LIKE -> {
+                String regex = likeToRegex(args[cond.paramIndex()].toString());
+                result.put(fieldName, Map.of("$regex", regex));
+            }
+            case STARTS_WITH -> result.put(fieldName, Map.of("$regex", "^" + Pattern.quote(args[cond.paramIndex()].toString())));
+            case ENDS_WITH -> result.put(fieldName, Map.of("$regex", Pattern.quote(args[cond.paramIndex()].toString()) + "$"));
+            case CONTAINS -> result.put(fieldName, args[cond.paramIndex()]);
+            case NOT_CONTAINS -> result.put(fieldName, nullSafeOp("$ne", args[cond.paramIndex()]));
+            case MATCHES -> result.put(fieldName, Map.of("$regex", args[cond.paramIndex()].toString()));
+            case IGNORE_CASE -> {
+                Map<String, Object> regex = new LinkedHashMap<>();
+                regex.put("$regex", "^" + Pattern.quote(args[cond.paramIndex()].toString()) + "$");
+                regex.put("$options", "i");
+                result.put(fieldName, regex);
+            }
+            case IS_NULL -> result.put(fieldName, null);
+            case IS_NOT_NULL -> result.put(fieldName, nullSafeOp("$ne", null));
+            case IS_TRUE -> result.put(fieldName, true);
+            case IS_FALSE -> result.put(fieldName, false);
+            case IS_EMPTY -> result.put(fieldName, Map.of("$size", 0));
+            case IS_NOT_EMPTY -> result.put("$nor", List.of(Map.of(fieldName, Map.of("$size", 0))));
+            case SIZE -> result.put(fieldName, Map.of("$size", ((Number) args[cond.paramIndex()]).intValue()));
+        }
+        return result;
+    }
+
+    /**
+     * Creates a single-entry operator map that tolerates null values.
+     * {@code Map.of()} throws NPE for null values; this does not.
+     */
+    private static Map<String, Object> nullSafeOp(String op, Object value) {
+        Map<String, Object> map = new LinkedHashMap<>(1);
+        map.put(op, value);
+        return map;
+    }
+
+    /**
+     * Returns the @Aliases values for the given Java field, or an empty list if none.
+     */
+    private static List<String> resolveAliases(Morphium morphium,
+                                                Class entityClass,
+                                                String javaFieldName) {
+        try {
+            Field javaField = morphium.getARHelper().getField(entityClass, javaFieldName);
+            if (javaField != null && javaField.isAnnotationPresent(Aliases.class)) {
+                return List.of(javaField.getAnnotation(Aliases.class).value());
+            }
+        } catch (Exception e) {
+            log.trace("Could not resolve aliases for field '{}' on {}",
+                    javaFieldName, entityClass.getSimpleName(), e);
+        }
+        return List.of();
+    }
+
+    /**
+     * Converts a SQL LIKE pattern to a regex, escaping regex metacharacters
+     * while converting {@code %} to {@code .*} and {@code _} to {@code .}.
+     */
+    static String likeToRegex(String likePattern) {
+        StringBuilder regex = new StringBuilder();
+        StringBuilder literal = new StringBuilder();
+        for (int i = 0; i < likePattern.length(); i++) {
+            char c = likePattern.charAt(i);
+            if (c == '%' || c == '_') {
+                if (literal.length() > 0) {
+                    regex.append(Pattern.quote(literal.toString()));
+                    literal.setLength(0);
+                }
+                regex.append(c == '%' ? ".*" : ".");
+            } else {
+                literal.append(c);
+            }
+        }
+        if (literal.length() > 0) {
+            regex.append(Pattern.quote(literal.toString()));
+        }
+        return "^" + regex + "$";
     }
 }
