@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>de.caluga</groupId>
   <artifactId>morphium-jakarta-data</artifactId>
-  <version>1.0.0-SNAPSHOT</version>
+  <version>1.0.0</version>
   <name>Morphium Jakarta Data</name>
   <description>Framework-agnostic Jakarta Data runtime for Morphium ODM</description>
   <url>https://github.com/Bardioc1977/morphium-jakarta-data</url>
@@ -20,7 +20,7 @@
     <maven.compiler.target>21</maven.compiler.target>
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <morphium.version>6.2.2-SNAPSHOT</morphium.version>
+    <morphium.version>6.2.2</morphium.version>
     <jakarta.data.version>1.0.0</jakarta.data.version>
   </properties>
   <dependencies>
