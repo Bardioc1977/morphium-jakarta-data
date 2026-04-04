@@ -100,6 +100,7 @@ class MethodNameParserTest {
             assertThat(result.prefix()).isEqualTo(QueryDescriptor.Prefix.DELETE);
             assertThat(result.conditions()).hasSize(1);
             assertThat(result.conditions().get(0).field()).isEqualTo("status");
+            assertThat(result.conditions().get(0).operator()).isEqualTo(QueryDescriptor.Operator.EQ);
         }
     }
 
