@@ -9,10 +9,42 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link JdqlParser}, focusing on parenthesized group support
- * and parenthesis-aware top-level splitting.
+ * Unit tests for {@link JdqlParser}, covering empty/null input handling,
+ * parenthesized group support, and parenthesis-aware top-level splitting.
  */
 class JdqlParserTest {
+
+    @Nested
+    @DisplayName("Empty and null input — find all contract")
+    class EmptyInputTests {
+
+        @Test
+        @DisplayName("parse(\"\") returns empty conditions (find all)")
+        void emptyStringReturnsEmptyConditions() {
+            JdqlQuery result = JdqlParser.parse("");
+            assertThat(result.conditions()).isEmpty();
+            assertThat(result.orderBy()).isEmpty();
+            assertThat(result.combinator()).isEqualTo(JdqlQuery.Combinator.AND);
+        }
+
+        @Test
+        @DisplayName("parse(null) returns empty conditions (find all)")
+        void nullReturnsEmptyConditions() {
+            JdqlQuery result = JdqlParser.parse(null);
+            assertThat(result.conditions()).isEmpty();
+            assertThat(result.orderBy()).isEmpty();
+            assertThat(result.combinator()).isEqualTo(JdqlQuery.Combinator.AND);
+        }
+
+        @Test
+        @DisplayName("parse(\"   \") (blank) returns empty conditions (find all)")
+        void blankStringReturnsEmptyConditions() {
+            JdqlQuery result = JdqlParser.parse("   ");
+            assertThat(result.conditions()).isEmpty();
+            assertThat(result.orderBy()).isEmpty();
+            assertThat(result.combinator()).isEqualTo(JdqlQuery.Combinator.AND);
+        }
+    }
 
     @Nested
     @DisplayName("Parenthesized group parsing")
